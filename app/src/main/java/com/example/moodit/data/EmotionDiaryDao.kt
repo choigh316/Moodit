@@ -16,4 +16,7 @@ interface EmotionDiaryDao {
 
     @Query("SELECT * FROM emotion_diaries WHERE userId = :userId ORDER BY dateText DESC")
     fun getDiariesForUser(userId: String): Flow<List<EmotionDiaryEntity>>
+
+    @Query("DELETE FROM emotion_diaries WHERE userId = :userId")
+    suspend fun deleteDiariesForUser(userId: String)
 }

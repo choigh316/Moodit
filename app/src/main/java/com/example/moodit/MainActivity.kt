@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
@@ -92,13 +93,16 @@ import kotlinx.coroutines.launch
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.ByteArrayInputStream
+import java.text.NumberFormat
 import java.security.MessageDigest
 import java.util.Calendar
+import java.util.Locale
 import java.util.zip.ZipInputStream
 
 private val MooditPurple = Color(0xFF7A5CE6)
 private val MooditPurpleSoft = Color(0xFFF0EBFF)
 private val MooditBackground = Color(0xFFF9F8FD)
+private val WonNumberFormat = NumberFormat.getNumberInstance(Locale.KOREA)
 private const val MonthlyGoalAmount = 400000
 private val PaymentMethods = listOf("카드", "현금", "계좌이체", "기타")
 
@@ -352,6 +356,13 @@ fun MooditApp(database: MooditDatabase) {
                         currentUser = null
                         selectedTab = 0
                     },
+                    onDeleteAllData = {
+                        scope.launch {
+                            dao.deleteAllExpenses()
+                            diaryDao.deleteDiariesForUser(currentUser!!.userId)
+                            importMessage = "모든 기록을 삭제했어요"
+                        }
+                    },
                     onImportTossHistory = {
                         tossImportLauncher.launch("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                     }
@@ -472,7 +483,7 @@ fun HomeScreen(
         item {
             SummaryCard(
                 title = "이번 달 지출",
-                value = "${result.totalAmount}원",
+                value = formatWon(result.totalAmount),
                 subtitle = "감정 소비 비율 ${result.emotionalSpendingRate}%"
             )
         }
@@ -588,7 +599,7 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
             AppCard {
                 Text("금액", fontWeight = FontWeight.SemiBold)
                 Text(
-                    text = if (amountText.isBlank()) "0원" else "${amountText}원",
+                    text = formatWon(amountText.toIntOrNull() ?: 0),
                     style = MaterialTheme.typography.headlineMedium,
                     color = MooditPurple,
                     fontWeight = FontWeight.Bold
@@ -1128,6 +1139,7 @@ fun MyPageScreen(
     importMessage: String?,
     onNicknameChanged: (String) -> Unit,
     onLogout: () -> Unit,
+    onDeleteAllData: () -> Unit,
     onImportTossHistory: () -> Unit
 ) {
     val goalAmount = MonthlyGoalAmount
@@ -1136,6 +1148,30 @@ fun MyPageScreen(
     val moodTemperature = moodTemperature(records)
     var nicknameText by remember(user.nickname) { mutableStateOf(user.nickname) }
     var nicknameMessage by remember { mutableStateOf<String?>(null) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("전체 데이터를 삭제할까요?") },
+            text = { Text("소비 기록과 감정일기가 모두 삭제됩니다. 삭제하면 복구할 수 없어요.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDeleteAllData()
+                    }
+                ) {
+                    Text("삭제", color = Color(0xFFD84A4A))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("취소")
+                }
+            }
+        )
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -1219,7 +1255,7 @@ fun MyPageScreen(
             SummaryCard(
                 title = "목표 사용률",
                 value = "$goalRate%",
-                subtitle = "고정 지출 제외 / 목표 금액 ${goalAmount}원"
+                subtitle = "고정 지출 제외 / 목표 금액 ${formatWon(goalAmount)}"
             )
         }
 
@@ -1245,6 +1281,15 @@ fun MyPageScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("로그아웃", color = Color(0xFFD84A4A))
+            }
+        }
+
+        item {
+            TextButton(
+                onClick = { showDeleteConfirm = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("전체 데이터 삭제", color = Color(0xFFD84A4A))
             }
         }
 
@@ -1743,7 +1788,7 @@ private fun DayExpenseList(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            "${record.amount}원",
+                            formatWon(record.amount),
                             color = MooditPurple,
                             fontWeight = FontWeight.Bold
                         )
@@ -1844,7 +1889,7 @@ private fun TimePeriodSpendingCard(records: List<ExpenseRecord>) {
                                 .background(entry.color, CircleShape)
                         )
                         Text(
-                            text = "${entry.label} ${entry.amount}원 · $percent%",
+                            text = "${entry.label} ${formatWon(entry.amount)} · $percent%",
                             color = Color(0xFF666666),
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -1862,7 +1907,7 @@ private fun FixedExpenseSummaryCard(records: List<ExpenseRecord>) {
 
     SummaryCard(
         title = "고정 지출",
-        value = "${fixedAmount}원",
+        value = formatWon(fixedAmount),
         subtitle = "월세, 통신비, 구독, OTT, 세금 ${count}건"
     )
 }
@@ -1874,7 +1919,7 @@ private fun ProgressCard(title: String, amount: Int, total: Int) {
     AppCard {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(title, fontWeight = FontWeight.SemiBold)
-            Text("${amount}원", color = MooditPurple, fontWeight = FontWeight.Bold)
+            Text(formatWon(amount), color = MooditPurple, fontWeight = FontWeight.Bold)
         }
         LinearProgressIndicator(
             progress = { progress },
@@ -2716,6 +2761,10 @@ private fun trendDateLabel(dateKey: Int): String {
     val month = dateKey / 100 % 100
     val day = dateKey % 100
     return "${month}/${day}"
+}
+
+private fun formatWon(amount: Int): String {
+    return "${WonNumberFormat.format(amount)}원"
 }
 
 private fun formatAmountShort(amount: Int): String {
