@@ -60,12 +60,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.example.moodit.analysis.AiAnalysisClient
 import com.example.moodit.analysis.MoodAnalysisEngine
@@ -208,11 +210,11 @@ fun MooditApp(database: MooditDatabase) {
                 modifier = Modifier.height(92.dp)
             ) {
                 val tabs = listOf(
-                    TabItem("홈", R.drawable.nav_home, R.drawable.nav_home_selected),
-                    TabItem("기록", R.drawable.nav_record, R.drawable.nav_record_selected),
-                    TabItem("분석", R.drawable.nav_analysis, R.drawable.nav_analysis_selected),
-                    TabItem("통계", R.drawable.nav_stats, R.drawable.nav_stats_selected),
-                    TabItem("마이", R.drawable.nav_my, R.drawable.nav_my_selected)
+                    TabItem("홈", R.drawable.nav_home_toolbar, R.drawable.nav_home_toolbar),
+                    TabItem("기록", R.drawable.nav_record_toolbar, R.drawable.nav_record_toolbar),
+                    TabItem("분석", R.drawable.nav_analysis_toolbar, R.drawable.nav_analysis_toolbar),
+                    TabItem("통계", R.drawable.nav_stats_toolbar, R.drawable.nav_stats_toolbar),
+                    TabItem("마이", R.drawable.nav_my_toolbar, R.drawable.nav_my_toolbar)
                 )
 
                 tabs.forEachIndexed { index, tab ->
@@ -227,9 +229,10 @@ fun MooditApp(database: MooditDatabase) {
                                 colorFilter = ColorFilter.tint(
                                     if (selected) MooditPurple else Color(0xFF222222)
                                 ),
-                                modifier = Modifier.size(width = 68.dp, height = 62.dp)
+                                modifier = Modifier.size(28.dp)
                             )
                         },
+                        label = { Text(tab.title) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = MooditPurple,
                             selectedTextColor = MooditPurple,
@@ -343,7 +346,7 @@ fun HomeScreen(
         mutableStateOf(diary?.moodType() ?: MoodType.HAPPY)
     }
     var diaryText by remember(diary?.updatedAt) {
-        mutableStateOf(diary?.note.orEmpty())
+        mutableStateOf(TextFieldValue(diary?.note.orEmpty()))
     }
     var diaryMessage by remember { mutableStateOf<String?>(null) }
 
@@ -365,6 +368,19 @@ fun HomeScreen(
         }
 
         if (diary?.note?.isNotBlank() != true) {
+            item {
+                AppCard {
+                    Image(
+                        painter = painterResource(id = R.drawable.home_emotion_diary),
+                        contentDescription = "감정일기 안내",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(230.dp)
+                    )
+                }
+            }
+
             item {
                 Text(
                     text = "오늘 기분은 어떤가요?",
@@ -406,7 +422,7 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(
                         onClick = {
-                            onSaveDiary(selectedMood, diaryText)
+                            onSaveDiary(selectedMood, diaryText.text)
                             diaryMessage = "오늘의 한줄일기를 저장했어요"
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -474,7 +490,7 @@ fun HomeScreen(
 fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
     val focusManager = LocalFocusManager.current
     var amountText by remember { mutableStateOf("") }
-    var memo by remember { mutableStateOf("") }
+    var memo by remember { mutableStateOf(TextFieldValue("")) }
     var dateText by remember { mutableStateOf(todayDateText()) }
     var timeText by remember { mutableStateOf(currentTimeText()) }
     var showDatePicker by remember { mutableStateOf(false) }
@@ -691,14 +707,14 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
                                 selectedCategory,
                                 selectedSubCategory,
                                 if (fixedExpense) MoodType.NORMAL else selectedMood,
-                                memo,
+                                memo.text,
                                 selectedPaymentMethod,
                                 selectedDateTime
                             )
                         )
 
                         amountText = ""
-                        memo = ""
+                        memo = TextFieldValue("")
                         dateText = todayDateText()
                         timeText = currentTimeText()
                         selectedCategory = ExpenseCategory.FOOD
@@ -1547,7 +1563,7 @@ private fun DiaryEditorCard(
         mutableStateOf(diary?.moodType() ?: MoodType.HAPPY)
     }
     var note by remember(selectedDay, diary?.updatedAt) {
-        mutableStateOf(diary?.note.orEmpty())
+        mutableStateOf(TextFieldValue(diary?.note.orEmpty()))
     }
     var message by remember(selectedDay, diary?.updatedAt) {
         mutableStateOf<String?>(null)
@@ -1581,7 +1597,7 @@ private fun DiaryEditorCard(
         Spacer(modifier = Modifier.height(10.dp))
         Button(
             onClick = {
-                onSave(selectedMood, note)
+                onSave(selectedMood, note.text)
                 message = "한줄일기를 저장했어요"
             },
             modifier = Modifier.fillMaxWidth(),
