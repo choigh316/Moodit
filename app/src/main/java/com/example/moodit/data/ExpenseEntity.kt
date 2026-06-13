@@ -13,5 +13,6 @@ data class ExpenseEntity(
     val subCategory: String = "NONE",
     val mood: String,
     val memo: String,
+    val paymentMethod: String = "카드",
     val createdAt: Long
 )

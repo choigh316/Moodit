@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -56,44 +58,54 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.moodit.analysis.AiAnalysisClient
 import com.example.moodit.analysis.MoodAnalysisEngine
+import com.example.moodit.data.EmotionDiaryEntity
 import com.example.moodit.data.ExpenseCategory
 import com.example.moodit.data.ExpenseRecord
 import com.example.moodit.data.ExpenseSubCategory
 import com.example.moodit.data.MoodType
 import com.example.moodit.data.MooditDatabase
+import com.example.moodit.data.UserEntity
 import com.example.moodit.data.defaultSubCategory
 import com.example.moodit.data.toEntity
 import com.example.moodit.data.toRecord
 import com.example.moodit.ui.theme.MooditTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
 import java.util.Calendar
 
 private val MooditPurple = Color(0xFF7A5CE6)
 private val MooditPurpleSoft = Color(0xFFF0EBFF)
 private val MooditBackground = Color(0xFFF9F8FD)
 private const val MonthlyGoalAmount = 400000
+private val PaymentMethods = listOf("카드", "현금", "계좌이체", "기타")
 
 private data class TabItem(
     val title: String,
-    val icon: String
+    val iconRes: Int,
+    val selectedIconRes: Int
 )
 
 private data class DailyTotal(
     val label: String,
     val amount: Int
+)
+
+private data class TimePeriodTotal(
+    val label: String,
+    val amount: Int,
+    val color: Color
 )
 
 class MainActivity : ComponentActivity() {
@@ -113,36 +125,117 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MooditApp(database: MooditDatabase) {
     val dao = remember(database) { database.expenseDao() }
+    val userDao = remember(database) { database.userDao() }
+    val diaryDao = remember(database) { database.emotionDiaryDao() }
     val scope = rememberCoroutineScope()
     val entities by dao.getAllExpenses().collectAsState(initial = emptyList())
     val records = entities.map { it.toRecord() }
     var selectedTab by remember { mutableIntStateOf(0) }
     var aiReport by remember { mutableStateOf<String?>(null) }
     var aiLoading by remember { mutableStateOf(false) }
+    var currentUser by remember { mutableStateOf<UserEntity?>(null) }
+    var showLaunchSplash by remember { mutableStateOf(true) }
+    val today = todayDateText()
+    val todayDiary by diaryDao
+        .getDiaryForDate(currentUser?.userId.orEmpty(), today)
+        .collectAsState(initial = null)
+    val diaries by diaryDao
+        .getDiariesForUser(currentUser?.userId.orEmpty())
+        .collectAsState(initial = emptyList())
+
+    LaunchedEffect(Unit) {
+        delay(1200)
+        showLaunchSplash = false
+    }
+
+    if (showLaunchSplash) {
+        MooditLaunchSplash()
+        return
+    }
+
+    if (currentUser == null) {
+        AuthScreen(
+            onLogin = { userId, password, onResult ->
+                scope.launch {
+                    val user = userDao.findByUserId(userId.trim())
+                    if (user != null && user.passwordHash == hashPassword(password)) {
+                        currentUser = user
+                        onResult(null)
+                    } else {
+                        onResult("아이디 또는 비밀번호가 맞지 않아요")
+                    }
+                }
+            },
+            onRegister = { userId, email, nickname, password, passwordConfirm, onResult ->
+                scope.launch {
+                    val trimmedUserId = userId.trim()
+                    val trimmedEmail = email.trim()
+                    val trimmedNickname = nickname.trim()
+                    val error = validateRegisterInput(
+                        userId = trimmedUserId,
+                        email = trimmedEmail,
+                        nickname = trimmedNickname,
+                        password = password,
+                        passwordConfirm = passwordConfirm
+                    )
+                    when {
+                        error != null -> onResult(error)
+                        userDao.findByUserId(trimmedUserId) != null -> onResult("이미 사용 중인 아이디예요")
+                        userDao.findByEmail(trimmedEmail) != null -> onResult("이미 사용 중인 이메일이에요")
+                        else -> {
+                            val user = UserEntity(
+                                userId = trimmedUserId,
+                                email = trimmedEmail,
+                                nickname = trimmedNickname,
+                                passwordHash = hashPassword(password)
+                            )
+                            userDao.insertUser(user)
+                            currentUser = user
+                            onResult(null)
+                        }
+                    }
+                }
+            }
+        )
+        return
+    }
 
     Scaffold(
         containerColor = MooditBackground,
         bottomBar = {
-            NavigationBar(containerColor = Color.White) {
+            NavigationBar(
+                containerColor = Color.White,
+                modifier = Modifier.height(92.dp)
+            ) {
                 val tabs = listOf(
-                    TabItem("홈", "⌂"),
-                    TabItem("기록", "✎"),
-                    TabItem("분석", "⌕"),
-                    TabItem("통계", "▦"),
-                    TabItem("마이", "☺")
+                    TabItem("홈", R.drawable.nav_home, R.drawable.nav_home_selected),
+                    TabItem("기록", R.drawable.nav_record, R.drawable.nav_record_selected),
+                    TabItem("분석", R.drawable.nav_analysis, R.drawable.nav_analysis_selected),
+                    TabItem("통계", R.drawable.nav_stats, R.drawable.nav_stats_selected),
+                    TabItem("마이", R.drawable.nav_my, R.drawable.nav_my_selected)
                 )
 
                 tabs.forEachIndexed { index, tab ->
+                    val selected = selectedTab == index
                     NavigationBarItem(
-                        selected = selectedTab == index,
+                        selected = selected,
                         onClick = { selectedTab = index },
-                        icon = { Text(tab.icon) },
-                        label = { Text(tab.title) },
+                        icon = {
+                            Image(
+                                painter = painterResource(id = if (selected) tab.selectedIconRes else tab.iconRes),
+                                contentDescription = tab.title,
+                                colorFilter = ColorFilter.tint(
+                                    if (selected) MooditPurple else Color(0xFF222222)
+                                ),
+                                modifier = Modifier.size(width = 68.dp, height = 62.dp)
+                            )
+                        },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = MooditPurple,
                             selectedTextColor = MooditPurple,
                             unselectedIconColor = Color(0xFF888888),
-                            unselectedTextColor = Color(0xFF888888)
+                            unselectedTextColor = Color(0xFF888888),
+                            indicatorColor = Color.Transparent
                         )
                     )
                 }
@@ -156,7 +249,23 @@ fun MooditApp(database: MooditDatabase) {
                 .background(MooditBackground)
         ) {
             when (selectedTab) {
-                0 -> HomeScreen(records)
+                0 -> HomeScreen(
+                    records = records,
+                    user = currentUser!!,
+                    diary = todayDiary,
+                    onSaveDiary = { mood, note ->
+                        scope.launch {
+                            diaryDao.upsertDiary(
+                                EmotionDiaryEntity(
+                                    userId = currentUser!!.userId,
+                                    dateText = today,
+                                    mood = mood.name,
+                                    note = note.trim()
+                                )
+                            )
+                        }
+                    }
+                )
                 1 -> RecordScreen { record ->
                     scope.launch {
                         dao.insertExpense(record.toEntity())
@@ -165,8 +274,21 @@ fun MooditApp(database: MooditDatabase) {
                 }
                 2 -> AnalysisScreen(
                     records = records,
+                    diaries = diaries,
                     aiReport = aiReport,
                     aiLoading = aiLoading,
+                    onSaveDiary = { dateText, mood, note ->
+                        scope.launch {
+                            diaryDao.upsertDiary(
+                                EmotionDiaryEntity(
+                                    userId = currentUser!!.userId,
+                                    dateText = dateText,
+                                    mood = mood.name,
+                                    note = note.trim()
+                                )
+                            )
+                        }
+                    },
                     onAiAnalyze = {
                         scope.launch {
                             aiLoading = true
@@ -185,6 +307,17 @@ fun MooditApp(database: MooditDatabase) {
                 3 -> StatisticsScreen(records)
                 4 -> MyPageScreen(
                     records = records,
+                    user = currentUser!!,
+                    onNicknameChanged = { nickname ->
+                        scope.launch {
+                            userDao.updateNickname(currentUser!!.userId, nickname.trim())
+                            currentUser = currentUser!!.copy(nickname = nickname.trim())
+                        }
+                    },
+                    onLogout = {
+                        currentUser = null
+                        selectedTab = 0
+                    },
                     onImportTossHistory = {
                         scope.launch {
                             tossSampleRecords().forEach { record ->
@@ -199,9 +332,20 @@ fun MooditApp(database: MooditDatabase) {
 }
 
 @Composable
-fun HomeScreen(records: List<ExpenseRecord>) {
+fun HomeScreen(
+    records: List<ExpenseRecord>,
+    user: UserEntity,
+    diary: EmotionDiaryEntity?,
+    onSaveDiary: (MoodType, String) -> Unit
+) {
     val result = MoodAnalysisEngine.analyzeMonthly(records, 31)
-    var selectedMood by remember { mutableStateOf(MoodType.HAPPY) }
+    var selectedMood by remember(diary?.updatedAt) {
+        mutableStateOf(diary?.moodType() ?: MoodType.HAPPY)
+    }
+    var diaryText by remember(diary?.updatedAt) {
+        mutableStateOf(diary?.note.orEmpty())
+    }
+    var diaryMessage by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -217,22 +361,62 @@ fun HomeScreen(records: List<ExpenseRecord>) {
                 color = MooditPurple,
                 fontWeight = FontWeight.Bold
             )
-            Text("안녕하세요, sunny님", color = Color(0xFF777777))
+            Text("안녕하세요, ${user.nickname}님", color = Color(0xFF777777))
         }
 
-        item {
-            Text(
-                text = "오늘 기분은 어떤가요?",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold
-            )
+        if (diary?.note?.isNotBlank() != true) {
+            item {
+                Text(
+                    text = "오늘 기분은 어떤가요?",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            item {
+                MoodChipRow(
+                    selectedMood = selectedMood,
+                    onSelected = {
+                        selectedMood = it
+                        diaryMessage = null
+                    }
+                )
+            }
         }
 
-        item {
-            MoodChipRow(
-                selectedMood = selectedMood,
-                onSelected = { selectedMood = it }
-            )
+        if (diary?.note?.isNotBlank() != true) {
+            item {
+                AppCard {
+                    Text("오늘의 한줄일기", color = MooditPurple, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = diaryText,
+                        onValueChange = {
+                            diaryText = it
+                            diaryMessage = null
+                        },
+                        label = { Text("${selectedMood.label}한 하루를 한 줄로 적어보세요") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    diaryMessage?.let {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(it, color = MooditPurple, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            onSaveDiary(selectedMood, diaryText)
+                            diaryMessage = "오늘의 한줄일기를 저장했어요"
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MooditPurple),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text("한줄일기 저장")
+                    }
+                }
+            }
         }
 
         item {
@@ -301,6 +485,7 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
     var selectedCategory by remember { mutableStateOf(ExpenseCategory.FOOD) }
     var selectedSubCategory by remember { mutableStateOf(defaultSubCategory(ExpenseCategory.FOOD)) }
     var selectedMood by remember { mutableStateOf(MoodType.HAPPY) }
+    var selectedPaymentMethod by remember { mutableStateOf(PaymentMethods.first()) }
     val fixedExpense = fixedExpenseMode || isFixedExpense(selectedSubCategory)
 
     if (showDatePicker) {
@@ -377,9 +562,7 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
                     keyboardActions = KeyboardActions(
                         onNext = { focusManager.moveFocus(FocusDirection.Down) }
                     ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .moveFocusOnTab(focusManager)
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -398,9 +581,7 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
                         keyboardActions = KeyboardActions(
                             onNext = { focusManager.moveFocus(FocusDirection.Down) }
                         ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .moveFocusOnTab(focusManager)
+                        modifier = Modifier.weight(1f)
                     )
                     Button(
                         onClick = { showDatePicker = true },
@@ -422,9 +603,7 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
                     keyboardActions = KeyboardActions(
                         onNext = { focusManager.moveFocus(FocusDirection.Down) }
                     ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .moveFocusOnTab(focusManager)
+                    modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
                     value = memo,
@@ -437,9 +616,7 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
                     keyboardActions = KeyboardActions(
                         onDone = { focusManager.clearFocus() }
                     ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .moveFocusOnTab(focusManager, clearOnTab = true)
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
@@ -478,6 +655,14 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
         }
 
         item {
+            SectionTitle("결제수단")
+            PaymentMethodChipRow(
+                selectedPaymentMethod = selectedPaymentMethod,
+                onSelected = { selectedPaymentMethod = it }
+            )
+        }
+
+        item {
             SectionTitle("감정")
             if (fixedExpense) {
                 AppCard {
@@ -507,6 +692,7 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
                                 selectedSubCategory,
                                 if (fixedExpense) MoodType.NORMAL else selectedMood,
                                 memo,
+                                selectedPaymentMethod,
                                 selectedDateTime
                             )
                         )
@@ -518,6 +704,7 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
                         selectedCategory = ExpenseCategory.FOOD
                         selectedSubCategory = defaultSubCategory(ExpenseCategory.FOOD)
                         selectedMood = MoodType.HAPPY
+                        selectedPaymentMethod = PaymentMethods.first()
                         fixedExpenseMode = false
                     }
                 },
@@ -533,13 +720,17 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
 @Composable
 fun AnalysisScreen(
     records: List<ExpenseRecord>,
+    diaries: List<EmotionDiaryEntity>,
     aiReport: String?,
     aiLoading: Boolean,
+    onSaveDiary: (String, MoodType, String) -> Unit,
     onAiAnalyze: () -> Unit,
     onDelete: (ExpenseRecord) -> Unit
 ) {
     val result = MoodAnalysisEngine.analyzeMonthly(records, 31)
     var selectedDay by remember { mutableIntStateOf(Calendar.getInstance().get(Calendar.DAY_OF_MONTH)) }
+    val selectedDateText = dateTextForCurrentMonthDay(selectedDay)
+    val selectedDiary = diaries.firstOrNull { it.dateText == selectedDateText }
 
     LazyColumn(
         modifier = Modifier
@@ -559,6 +750,7 @@ fun AnalysisScreen(
         item {
             CalendarCard(
                 records = records,
+                diaries = diaries,
                 selectedDay = selectedDay,
                 onDaySelected = { selectedDay = it }
             )
@@ -569,6 +761,16 @@ fun AnalysisScreen(
                 selectedDay = selectedDay,
                 records = records.filter { dayOfMonth(it.createdAt) == selectedDay },
                 onDelete = onDelete
+            )
+        }
+
+        item {
+            DiaryEditorCard(
+                selectedDay = selectedDay,
+                diary = selectedDiary,
+                onSave = { mood, note ->
+                    onSaveDiary(selectedDateText, mood, note)
+                }
             )
         }
 
@@ -654,11 +856,7 @@ fun StatisticsScreen(records: List<ExpenseRecord>) {
         }
 
         item {
-            SummaryCard(
-                title = "시간대별 소비 패턴",
-                value = topSpendingTimePeriod(records),
-                subtitle = "중간보고서 기준 시간대 분석"
-            )
+            TimePeriodSpendingCard(records)
         }
 
         item {
@@ -676,14 +874,224 @@ fun StatisticsScreen(records: List<ExpenseRecord>) {
 }
 
 @Composable
+private fun MooditLaunchSplash() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.moodit_splash_full),
+            contentDescription = "Moodit",
+            modifier = Modifier.size(260.dp)
+        )
+    }
+}
+
+@Composable
+private fun AuthScreen(
+    onLogin: (String, String, (String?) -> Unit) -> Unit,
+    onRegister: (String, String, String, String, String, (String?) -> Unit) -> Unit
+) {
+    var registerMode by remember { mutableStateOf(false) }
+    var userId by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var nickname by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordConfirm by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MooditBackground)
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        AppCard {
+            Image(
+                painter = painterResource(id = R.drawable.mood_happy),
+                contentDescription = "Moodit",
+                modifier = Modifier
+                    .size(124.dp)
+                    .align(Alignment.CenterHorizontally)
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "Moodit",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MooditPurple,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            )
+            Text(
+                text = if (registerMode) "계정을 만들고 감정 소비를 기록해요" else "로그인하고 오늘의 소비를 기록해요",
+                color = Color(0xFF777777),
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            )
+            Spacer(modifier = Modifier.height(18.dp))
+
+            OutlinedTextField(
+                value = userId,
+                onValueChange = {
+                    userId = it
+                    message = null
+                },
+                label = { Text("아이디") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            if (registerMode) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = {
+                        email = it
+                        message = null
+                    },
+                    label = { Text("이메일") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = nickname,
+                    onValueChange = {
+                        nickname = it
+                        message = null
+                    },
+                    label = { Text("닉네임") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(
+                value = password,
+                onValueChange = {
+                    password = it
+                    message = null
+                },
+                label = { Text("비밀번호") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            if (registerMode) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = passwordConfirm,
+                    onValueChange = {
+                        passwordConfirm = it
+                        message = null
+                    },
+                    label = { Text("비밀번호 확인") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "영문, 숫자, 특수문자 포함 6자 이상",
+                    color = Color(0xFF777777),
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+
+            message?.let {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = it,
+                    color = Color(0xFFD84A4A),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = {
+                    if (registerMode) {
+                        onRegister(userId, email, nickname, password, passwordConfirm) { result ->
+                            message = result
+                        }
+                    } else {
+                        onLogin(userId, password) { result ->
+                            message = result
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MooditPurple),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(if (registerMode) "회원가입" else "로그인")
+            }
+
+            TextButton(
+                onClick = {
+                    registerMode = !registerMode
+                    message = null
+                    passwordConfirm = ""
+                },
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                Text(if (registerMode) "이미 계정이 있어요" else "새 계정 만들기")
+            }
+        }
+    }
+}
+
+private fun validateRegisterInput(
+    userId: String,
+    email: String,
+    nickname: String,
+    password: String,
+    passwordConfirm: String
+): String? {
+    return when {
+        userId.isBlank() -> "아이디를 입력해주세요"
+        email.isBlank() || !email.contains("@") -> "올바른 이메일을 입력해주세요"
+        nickname.isBlank() -> "닉네임을 입력해주세요"
+        !isValidPassword(password) -> "비밀번호는 영문, 숫자, 특수문자를 포함해 6자 이상이어야 해요"
+        password != passwordConfirm -> "비밀번호가 서로 달라요"
+        else -> null
+    }
+}
+
+private fun isValidPassword(password: String): Boolean {
+    return password.length >= 6 &&
+        password.any { it.isLetter() } &&
+        password.any { it.isDigit() } &&
+        password.any { !it.isLetterOrDigit() }
+}
+
+private fun hashPassword(password: String): String {
+    val bytes = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
+    return bytes.joinToString("") { "%02x".format(it) }
+}
+
+@Composable
 fun MyPageScreen(
     records: List<ExpenseRecord>,
+    user: UserEntity,
+    onNicknameChanged: (String) -> Unit,
+    onLogout: () -> Unit,
     onImportTossHistory: () -> Unit
 ) {
     val goalAmount = MonthlyGoalAmount
     val controllableAmount = controllableSpendingAmount(records)
     val goalRate = if (goalAmount == 0) 0 else controllableAmount * 100 / goalAmount
     val moodTemperature = moodTemperature(records)
+    var nicknameText by remember(user.nickname) { mutableStateOf(user.nickname) }
+    var nicknameMessage by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -698,8 +1106,52 @@ fun MyPageScreen(
 
         item {
             AppCard {
-                Text("sunny", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(user.nickname, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("${user.userId} · ${user.email}", color = Color(0xFF777777))
                 Text("Moodit와 함께한 지 12일째", color = Color(0xFF777777))
+            }
+        }
+
+        item {
+            AppCard {
+                Text("닉네임 수정", color = MooditPurple, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = nicknameText,
+                    onValueChange = {
+                        nicknameText = it
+                        nicknameMessage = null
+                    },
+                    label = { Text("닉네임") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                nicknameMessage?.let {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = it,
+                        color = if (it.contains("수정")) MooditPurple else Color(0xFFD84A4A),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = {
+                        val nextNickname = nicknameText.trim()
+                        if (nextNickname.isBlank()) {
+                            nicknameMessage = "닉네임을 입력해주세요"
+                        } else {
+                            onNicknameChanged(nextNickname)
+                            nicknameMessage = "닉네임을 수정했어요"
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MooditPurple),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("닉네임 저장")
+                }
             }
         }
 
@@ -711,6 +1163,15 @@ fun MyPageScreen(
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Text("토스 내역 넣기")
+            }
+        }
+
+        item {
+            TextButton(
+                onClick = onLogout,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("로그아웃", color = Color(0xFFD84A4A))
             }
         }
 
@@ -760,24 +1221,6 @@ private fun SectionTitle(text: String) {
     )
 }
 
-private fun Modifier.moveFocusOnTab(
-    focusManager: androidx.compose.ui.focus.FocusManager,
-    clearOnTab: Boolean = false
-): Modifier {
-    return onPreviewKeyEvent { event ->
-        if (event.key == Key.Tab && event.type == KeyEventType.KeyUp) {
-            if (clearOnTab) {
-                focusManager.clearFocus()
-            } else {
-                focusManager.moveFocus(FocusDirection.Down)
-            }
-            true
-        } else {
-            false
-        }
-    }
-}
-
 @Composable
 private fun AppCard(content: @Composable ColumnScope.() -> Unit) {
     ElevatedCard(
@@ -818,6 +1261,41 @@ private fun SummaryCard(title: String, value: String, subtitle: String) {
 }
 
 @Composable
+private fun MoodIcon(mood: MoodType, modifier: Modifier = Modifier) {
+    Image(
+        painter = painterResource(id = moodIconRes(mood)),
+        contentDescription = mood.label,
+        modifier = modifier
+    )
+}
+
+private fun moodIconRes(mood: MoodType): Int {
+    return when (mood) {
+        MoodType.HAPPY -> R.drawable.mood_happy
+        MoodType.NORMAL -> R.drawable.mood_normal
+        MoodType.STRESS -> R.drawable.mood_stress
+        MoodType.SAD -> R.drawable.mood_sad
+    }
+}
+
+private fun categoryIconRes(category: ExpenseCategory): Int? {
+    return when (category) {
+        ExpenseCategory.FOOD -> R.drawable.category_food
+        ExpenseCategory.SHOPPING -> R.drawable.category_shopping
+        ExpenseCategory.TRANSPORT -> R.drawable.category_transport
+        ExpenseCategory.CAFE -> R.drawable.category_cafe
+        ExpenseCategory.GAME -> R.drawable.category_game
+        ExpenseCategory.CULTURE -> R.drawable.category_culture
+        ExpenseCategory.LIVING -> R.drawable.category_living
+        ExpenseCategory.ETC -> null
+    }
+}
+
+private fun EmotionDiaryEntity.moodType(): MoodType {
+    return runCatching { MoodType.valueOf(mood) }.getOrDefault(MoodType.HAPPY)
+}
+
+@Composable
 private fun MoodChipRow(selectedMood: MoodType, onSelected: (MoodType) -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -843,10 +1321,11 @@ private fun MoodChipRow(selectedMood: MoodType, onSelected: (MoodType) -> Unit) 
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Text(
-                        text = mood.emoji,
-                        style = MaterialTheme.typography.headlineSmall
+                    MoodIcon(
+                        mood = mood,
+                        modifier = Modifier.size(38.dp)
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = mood.label,
                         color = if (selected) MooditPurple else Color(0xFF666666),
@@ -883,6 +1362,30 @@ private fun RecordTypeChipRow(
 }
 
 @Composable
+private fun PaymentMethodChipRow(
+    selectedPaymentMethod: String,
+    onSelected: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        PaymentMethods.forEach { method ->
+            FilterChip(
+                selected = selectedPaymentMethod == method,
+                onClick = { onSelected(method) },
+                label = { Text(method) },
+                modifier = Modifier.weight(1f),
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MooditPurpleSoft,
+                    selectedLabelColor = MooditPurple
+                )
+            )
+        }
+    }
+}
+
+@Composable
 private fun CategoryChipGrid(
     selectedCategory: ExpenseCategory,
     onSelected: (ExpenseCategory) -> Unit
@@ -898,6 +1401,7 @@ private fun CategoryChipGrid(
                         selected = selectedCategory == category,
                         onClick = { onSelected(category) },
                         emoji = category.emoji,
+                        iconRes = null,
                         label = category.label,
                         modifier = Modifier.weight(1f)
                     )
@@ -927,6 +1431,7 @@ private fun SubCategoryChipGrid(
                             selected = selectedSubCategory == subCategory,
                             onClick = { onSelected(subCategory) },
                             emoji = subCategory.emoji,
+                            iconRes = null,
                             label = subCategory.label,
                             modifier = Modifier.weight(1f)
                         )
@@ -955,6 +1460,7 @@ private fun FixedExpenseChipGrid(
                         selected = selectedSubCategory == subCategory,
                         onClick = { onSelected(subCategory) },
                         emoji = subCategory.emoji,
+                        iconRes = null,
                         label = subCategory.label,
                         modifier = Modifier.weight(1f)
                     )
@@ -972,6 +1478,8 @@ private fun CategoryCard(
     selected: Boolean,
     onClick: () -> Unit,
     emoji: String,
+    iconRes: Int?,
+    iconSize: Int = 34,
     label: String,
     modifier: Modifier = Modifier
 ) {
@@ -991,10 +1499,19 @@ private fun CategoryCard(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Text(
-                text = emoji,
-                style = MaterialTheme.typography.headlineSmall
-            )
+            if (iconRes != null) {
+                Image(
+                    painter = painterResource(id = iconRes),
+                    contentDescription = label,
+                    modifier = Modifier.size(iconSize.dp)
+                )
+            } else {
+                Text(
+                    text = emoji,
+                    style = MaterialTheme.typography.headlineSmall
+                )
+            }
+            Spacer(modifier = Modifier.height(3.dp))
             Text(
                 text = label,
                 color = if (selected) MooditPurple else Color(0xFF666666),
@@ -1021,8 +1538,65 @@ private fun MonthHeader(month: String) {
 }
 
 @Composable
+private fun DiaryEditorCard(
+    selectedDay: Int,
+    diary: EmotionDiaryEntity?,
+    onSave: (MoodType, String) -> Unit
+) {
+    var selectedMood by remember(selectedDay, diary?.updatedAt) {
+        mutableStateOf(diary?.moodType() ?: MoodType.HAPPY)
+    }
+    var note by remember(selectedDay, diary?.updatedAt) {
+        mutableStateOf(diary?.note.orEmpty())
+    }
+    var message by remember(selectedDay, diary?.updatedAt) {
+        mutableStateOf<String?>(null)
+    }
+
+    AppCard {
+        Text("${selectedDay}일 한줄일기", color = MooditPurple, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(8.dp))
+        MoodChipRow(
+            selectedMood = selectedMood,
+            onSelected = {
+                selectedMood = it
+                message = null
+            }
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = note,
+            onValueChange = {
+                note = it
+                message = null
+            },
+            label = { Text("이날의 감정을 한 줄로 적어보세요") },
+            minLines = 2,
+            modifier = Modifier.fillMaxWidth()
+        )
+        message?.let {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(it, color = MooditPurple, style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Button(
+            onClick = {
+                onSave(selectedMood, note)
+                message = "한줄일기를 저장했어요"
+            },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = MooditPurple),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Text(if (diary == null) "한줄일기 저장" else "한줄일기 수정")
+        }
+    }
+}
+
+@Composable
 private fun CalendarCard(
     records: List<ExpenseRecord>,
+    diaries: List<EmotionDiaryEntity>,
     selectedDay: Int,
     onDaySelected: (Int) -> Unit
 ) {
@@ -1030,6 +1604,9 @@ private fun CalendarCard(
         records.map {
             Calendar.getInstance().apply { timeInMillis = it.createdAt }.get(Calendar.DAY_OF_MONTH)
         }.toSet()
+    }
+    val diaryDays = remember(diaries) {
+        diaries.mapNotNull { dayOfMonthFromDateText(it.dateText) }.toSet()
     }
 
     AppCard {
@@ -1043,6 +1620,7 @@ private fun CalendarCard(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 week.forEach { day ->
                     val hasRecord = highlightedDays.contains(day)
+                    val hasDiary = diaryDays.contains(day)
                     val selected = selectedDay == day
                     Box(
                         modifier = Modifier
@@ -1050,6 +1628,7 @@ private fun CalendarCard(
                             .background(
                                 when {
                                     selected -> MooditPurple
+                                    hasDiary -> Color(0xFFE7DDFF)
                                     hasRecord -> MooditPurpleSoft
                                     else -> Color.Transparent
                                 },
@@ -1060,8 +1639,8 @@ private fun CalendarCard(
                     ) {
                         Text(
                             text = day.toString(),
-                            color = if (selected) Color.White else if (hasRecord) MooditPurple else Color(0xFF999999),
-                            fontWeight = if (selected || hasRecord) FontWeight.Bold else FontWeight.Normal
+                            color = if (selected) Color.White else if (hasDiary || hasRecord) MooditPurple else Color(0xFF999999),
+                            fontWeight = if (selected || hasDiary || hasRecord) FontWeight.Bold else FontWeight.Normal
                         )
                     }
                 }
@@ -1097,7 +1676,7 @@ private fun DayExpenseList(
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            "${moodDisplayText(record)} · ${timeOfDayText(record.createdAt)}",
+                            "${moodDisplayText(record)} · ${record.paymentMethod} · ${timeOfDayText(record.createdAt)}",
                             color = Color(0xFF777777),
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -1166,6 +1745,56 @@ private fun DonutSummaryCard(title: String, categoryTotals: Map<ExpenseCategory,
                                 .background(categoryColor(entry.key), CircleShape)
                         )
                         Text("${entry.key.label} $percent%", color = Color(0xFF666666))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimePeriodSpendingCard(records: List<ExpenseRecord>) {
+    val entries = remember(records) { timePeriodTotals(records) }
+    val total = entries.sumOf { it.amount }.coerceAtLeast(1)
+    val topEntry = entries.maxByOrNull { it.amount }
+
+    AppCard {
+        Text("시간대별 소비 패턴", fontWeight = FontWeight.SemiBold)
+        Text(
+            text = topEntry?.let { "가장 많이 소비한 시간대: ${it.label}" } ?: "소비 기록을 추가해보세요",
+            color = Color(0xFF777777),
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TimePeriodPieChart(
+                entries = entries,
+                modifier = Modifier.size(124.dp)
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                entries.forEach { entry ->
+                    val percent = if (entries.sumOf { it.amount } == 0) {
+                        0
+                    } else {
+                        (entry.amount.toFloat() / total.toFloat() * 100f).toInt()
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .background(entry.color, CircleShape)
+                        )
+                        Text(
+                            text = "${entry.label} ${entry.amount}원 · $percent%",
+                            color = Color(0xFF666666),
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }
@@ -1333,12 +1962,58 @@ private fun DonutChart(
     }
 }
 
+@Composable
+private fun TimePeriodPieChart(
+    entries: List<TimePeriodTotal>,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val total = entries.sumOf { it.amount }
+        val diameter = size.minDimension
+
+        if (total <= 0) {
+            drawCircle(
+                color = Color(0xFFEDE7F6),
+                radius = diameter / 2f,
+                center = Offset(size.width / 2f, size.height / 2f)
+            )
+            return@Canvas
+        }
+
+        var startAngle = -90f
+        entries.forEach { entry ->
+            val sweep = entry.amount.toFloat() / total.toFloat() * 360f
+            drawArc(
+                color = entry.color,
+                startAngle = startAngle,
+                sweepAngle = sweep,
+                useCenter = true,
+                topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f),
+                size = androidx.compose.ui.geometry.Size(diameter, diameter)
+            )
+            startAngle += sweep
+        }
+    }
+}
+
 private fun todayDateText(): String {
     val calendar = Calendar.getInstance()
     val year = calendar.get(Calendar.YEAR)
     val month = calendar.get(Calendar.MONTH) + 1
     val day = calendar.get(Calendar.DAY_OF_MONTH)
     return "%04d%02d%02d".format(year, month, day)
+}
+
+private fun dateTextForCurrentMonthDay(day: Int): String {
+    val calendar = Calendar.getInstance()
+    val year = calendar.get(Calendar.YEAR)
+    val month = calendar.get(Calendar.MONTH) + 1
+    return "%04d%02d%02d".format(year, month, day)
+}
+
+private fun dayOfMonthFromDateText(dateText: String): Int? {
+    if (dateText.length != 8) return null
+    return dateText.substring(6, 8).toIntOrNull()
 }
 
 private fun dateTextToMillis(dateText: String): Long? {
@@ -1510,36 +2185,48 @@ private fun categoryColor(category: ExpenseCategory): Color {
     }
 }
 
+private fun timePeriodTotals(records: List<ExpenseRecord>): List<TimePeriodTotal> {
+    val labels = listOf("00-06", "06-12", "12-18", "18-24")
+    val amounts = IntArray(labels.size)
+    val calendar = Calendar.getInstance()
+
+    records
+        .filterNot { isFixedExpense(it) }
+        .forEach { record ->
+            calendar.timeInMillis = record.createdAt
+            val index = when (calendar.get(Calendar.HOUR_OF_DAY)) {
+                in 0..5 -> 0
+                in 6..11 -> 1
+                in 12..17 -> 2
+                else -> 3
+            }
+            amounts[index] += record.amount
+        }
+
+    val rankColors = listOf(
+        Color(0xFFE53935),
+        Color(0xFFFF9800),
+        Color(0xFFFFD54F),
+        Color(0xFF43A047)
+    )
+    val colorByIndex = amounts.indices
+        .sortedWith(compareByDescending<Int> { amounts[it] }.thenBy { it })
+        .mapIndexed { rank, index -> index to rankColors[rank] }
+        .toMap()
+
+    return labels.mapIndexed { index, label ->
+        TimePeriodTotal(
+            label = label,
+            amount = amounts[index],
+            color = colorByIndex[index] ?: rankColors.last()
+        )
+    }
+}
+
 private fun controllableSpendingAmount(records: List<ExpenseRecord>): Int {
     return records
         .filterNot { isFixedExpense(it) }
         .sumOf { it.amount }
-}
-
-private fun topSpendingTimePeriod(records: List<ExpenseRecord>): String {
-    if (records.isEmpty()) return "기록 없음"
-
-    val totals = linkedMapOf(
-        "새벽" to 0,
-        "오전" to 0,
-        "오후" to 0,
-        "저녁" to 0
-    )
-
-    val calendar = Calendar.getInstance()
-    records.forEach { record ->
-        calendar.timeInMillis = record.createdAt
-        val label = when (calendar.get(Calendar.HOUR_OF_DAY)) {
-            in 0..5 -> "새벽"
-            in 6..11 -> "오전"
-            in 12..17 -> "오후"
-            else -> "저녁"
-        }
-        totals[label] = (totals[label] ?: 0) + record.amount
-    }
-
-    val top = totals.maxByOrNull { it.value } ?: return "기록 없음"
-    return "${top.key} ${top.value}원"
 }
 
 private fun riskyTimePeriod(records: List<ExpenseRecord>): String {

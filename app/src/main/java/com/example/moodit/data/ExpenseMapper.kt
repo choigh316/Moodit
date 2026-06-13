@@ -9,6 +9,7 @@ fun ExpenseRecord.toEntity(): ExpenseEntity {
         subCategory = subCategory.name,
         mood = mood.name,
         memo = memo,
+        paymentMethod = paymentMethod,
         createdAt = createdAt
     )
 }
@@ -21,6 +22,7 @@ fun ExpenseEntity.toRecord(): ExpenseRecord {
         subCategoryFromEntity(category, subCategory, foodDetail),
         MoodType.valueOf(mood),
         memo,
+        paymentMethod,
         createdAt
     )
 }

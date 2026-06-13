@@ -7,6 +7,7 @@ public class ExpenseRecord {
     private final ExpenseSubCategory subCategory;
     private final MoodType mood;
     private final String memo;
+    private final String paymentMethod;
     private final long createdAt;
 
     public ExpenseRecord(
@@ -29,12 +30,26 @@ public class ExpenseRecord {
             String memo,
             long createdAt
     ) {
+        this(id, amount, category, subCategory, mood, memo, "카드", createdAt);
+    }
+
+    public ExpenseRecord(
+            long id,
+            int amount,
+            ExpenseCategory category,
+            ExpenseSubCategory subCategory,
+            MoodType mood,
+            String memo,
+            String paymentMethod,
+            long createdAt
+    ) {
         this.id = id;
         this.amount = amount;
         this.category = category;
         this.subCategory = subCategory;
         this.mood = mood;
         this.memo = memo;
+        this.paymentMethod = paymentMethod;
         this.createdAt = createdAt;
     }
 
@@ -60,6 +75,10 @@ public class ExpenseRecord {
 
     public String getMemo() {
         return memo;
+    }
+
+    public String getPaymentMethod() {
+        return paymentMethod;
     }
 
     public long getCreatedAt() {
