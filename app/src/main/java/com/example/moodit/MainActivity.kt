@@ -1,8 +1,12 @@
 ﻿package com.example.moodit
 
+import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -62,6 +66,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -84,8 +89,12 @@ import com.example.moodit.data.toRecord
 import com.example.moodit.ui.theme.MooditTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
+import java.io.ByteArrayInputStream
 import java.security.MessageDigest
 import java.util.Calendar
+import java.util.zip.ZipInputStream
 
 private val MooditPurple = Color(0xFF7A5CE6)
 private val MooditPurpleSoft = Color(0xFFF0EBFF)
@@ -126,6 +135,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MooditApp(database: MooditDatabase) {
+    val context = LocalContext.current
     val dao = remember(database) { database.expenseDao() }
     val userDao = remember(database) { database.userDao() }
     val diaryDao = remember(database) { database.emotionDiaryDao() }
@@ -137,6 +147,7 @@ fun MooditApp(database: MooditDatabase) {
     var aiLoading by remember { mutableStateOf(false) }
     var currentUser by remember { mutableStateOf<UserEntity?>(null) }
     var showLaunchSplash by remember { mutableStateOf(true) }
+    var importMessage by remember { mutableStateOf<String?>(null) }
     val today = todayDateText()
     val todayDiary by diaryDao
         .getDiaryForDate(currentUser?.userId.orEmpty(), today)
@@ -144,6 +155,25 @@ fun MooditApp(database: MooditDatabase) {
     val diaries by diaryDao
         .getDiariesForUser(currentUser?.userId.orEmpty())
         .collectAsState(initial = emptyList())
+    val tossImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val imported = runCatching { parseMooditExpenseWorkbook(context, uri) }
+                    .getOrElse {
+                        importMessage = "엑셀 파일을 읽지 못했어요."
+                        emptyList()
+                    }
+                imported.forEach { record ->
+                    dao.insertExpense(record.toEntity())
+                }
+                if (imported.isNotEmpty()) {
+                    importMessage = "${imported.size}건을 가져왔어요"
+                }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         delay(1200)
@@ -311,6 +341,7 @@ fun MooditApp(database: MooditDatabase) {
                 4 -> MyPageScreen(
                     records = records,
                     user = currentUser!!,
+                    importMessage = importMessage,
                     onNicknameChanged = { nickname ->
                         scope.launch {
                             userDao.updateNickname(currentUser!!.userId, nickname.trim())
@@ -322,11 +353,7 @@ fun MooditApp(database: MooditDatabase) {
                         selectedTab = 0
                     },
                     onImportTossHistory = {
-                        scope.launch {
-                            tossSampleRecords().forEach { record ->
-                                dao.insertExpense(record.toEntity())
-                            }
-                        }
+                        tossImportLauncher.launch("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                     }
                 )
             }
@@ -1098,6 +1125,7 @@ private fun hashPassword(password: String): String {
 fun MyPageScreen(
     records: List<ExpenseRecord>,
     user: UserEntity,
+    importMessage: String?,
     onNicknameChanged: (String) -> Unit,
     onLogout: () -> Unit,
     onImportTossHistory: () -> Unit
@@ -1172,26 +1200,6 @@ fun MyPageScreen(
         }
 
         item {
-            Button(
-                onClick = onImportTossHistory,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MooditPurple),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text("토스 내역 넣기")
-            }
-        }
-
-        item {
-            TextButton(
-                onClick = onLogout,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("로그아웃", color = Color(0xFFD84A4A))
-            }
-        }
-
-        item {
             SummaryCard(
                 title = "감정 소비 온도계",
                 value = "%.1f℃".format(moodTemperature),
@@ -1213,6 +1221,35 @@ fun MyPageScreen(
                 value = "$goalRate%",
                 subtitle = "고정 지출 제외 / 목표 금액 ${goalAmount}원"
             )
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = onImportTossHistory,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MooditPurple),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("토스 내역 넣기")
+            }
+            importMessage?.let {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(it, color = MooditPurple, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        item {
+            TextButton(
+                onClick = onLogout,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("로그아웃", color = Color(0xFFD84A4A))
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }
@@ -2144,6 +2181,189 @@ private fun tossRecord(
 ): ExpenseRecord {
     val createdAt = dateTimeTextToMillis(dateText, timeText) ?: id
     return ExpenseRecord(id, amount, category, subCategory, mood, memo, createdAt)
+}
+
+private fun parseMooditExpenseWorkbook(context: Context, uri: Uri): List<ExpenseRecord> {
+    val input = context.contentResolver.openInputStream(uri) ?: return emptyList()
+    val entries = mutableMapOf<String, ByteArray>()
+
+    ZipInputStream(input).use { zip ->
+        var entry = zip.nextEntry
+        while (entry != null) {
+            val name = entry.name
+            if (name == "xl/sharedStrings.xml" || name.startsWith("xl/worksheets/sheet")) {
+                entries[name] = zip.readBytes()
+            }
+            zip.closeEntry()
+            entry = zip.nextEntry
+        }
+    }
+
+    val sharedStrings = entries["xl/sharedStrings.xml"]?.let { parseSharedStrings(it) }.orEmpty()
+    val sheetBytes = entries.entries
+        .filter { it.key.startsWith("xl/worksheets/sheet") }
+        .minByOrNull { it.key }
+        ?.value
+        ?: return emptyList()
+    val rows = parseSheetRows(sheetBytes, sharedStrings).filter { row ->
+        row.any { it.isNotBlank() }
+    }
+    if (rows.isEmpty()) return emptyList()
+
+    val header = rows.first().map { it.trim() }
+    fun col(name: String): Int = header.indexOf(name)
+
+    val dateCol = col("날짜")
+    val timeCol = col("시간")
+    val memoCol = col("항목")
+    val amountCol = col("금액")
+    val categoryCol = col("카테고리")
+    val moodCol = col("감정")
+    val paymentCol = col("결제수단")
+
+    if (listOf(dateCol, timeCol, memoCol, amountCol, categoryCol, moodCol, paymentCol).any { it < 0 }) {
+        return emptyList()
+    }
+
+    return rows.drop(1).mapIndexedNotNull { index, row ->
+        val amount = row.getOrNull(amountCol)
+            ?.replace(",", "")
+            ?.filter { it.isDigit() }
+            ?.toIntOrNull()
+            ?: return@mapIndexedNotNull null
+        val dateText = normalizeImportDate(row.getOrNull(dateCol).orEmpty()) ?: return@mapIndexedNotNull null
+        val timeText = normalizeImportTime(row.getOrNull(timeCol).orEmpty()) ?: "0000"
+        val category = categoryFromImport(row.getOrNull(categoryCol).orEmpty())
+        val subCategory = defaultSubCategory(category)
+        val mood = moodFromImport(row.getOrNull(moodCol).orEmpty())
+        val paymentMethod = paymentMethodFromImport(row.getOrNull(paymentCol).orEmpty())
+        val createdAt = dateTimeTextToMillis(dateText, timeText) ?: System.currentTimeMillis()
+
+        ExpenseRecord(
+            createdAt + index,
+            amount,
+            category,
+            subCategory,
+            mood,
+            row.getOrNull(memoCol).orEmpty(),
+            paymentMethod,
+            createdAt
+        )
+    }
+}
+
+private fun parseSharedStrings(bytes: ByteArray): List<String> {
+    val parser = XmlPullParserFactory.newInstance().newPullParser()
+    parser.setInput(ByteArrayInputStream(bytes), "UTF-8")
+    val strings = mutableListOf<String>()
+    val current = StringBuilder()
+    var inStringItem = false
+
+    while (parser.next() != XmlPullParser.END_DOCUMENT) {
+        when (parser.eventType) {
+            XmlPullParser.START_TAG -> if (parser.name == "si") {
+                inStringItem = true
+                current.clear()
+            }
+            XmlPullParser.TEXT -> if (inStringItem) current.append(parser.text)
+            XmlPullParser.END_TAG -> if (parser.name == "si") {
+                strings.add(current.toString())
+                inStringItem = false
+            }
+        }
+    }
+
+    return strings
+}
+
+private fun parseSheetRows(bytes: ByteArray, sharedStrings: List<String>): List<List<String>> {
+    val parser = XmlPullParserFactory.newInstance().newPullParser()
+    parser.setInput(ByteArrayInputStream(bytes), "UTF-8")
+    val rows = mutableListOf<List<String>>()
+    var currentRow: MutableList<String>? = null
+    var currentType = ""
+    var currentColumn = 0
+    var captureValue = false
+    val value = StringBuilder()
+
+    while (parser.next() != XmlPullParser.END_DOCUMENT) {
+        when (parser.eventType) {
+            XmlPullParser.START_TAG -> when (parser.name) {
+                "row" -> currentRow = mutableListOf()
+                "c" -> {
+                    currentType = parser.getAttributeValue(null, "t").orEmpty()
+                    currentColumn = cellColumnIndex(parser.getAttributeValue(null, "r").orEmpty())
+                    value.clear()
+                }
+                "v", "t" -> {
+                    captureValue = true
+                    value.clear()
+                }
+            }
+            XmlPullParser.TEXT -> if (captureValue) value.append(parser.text)
+            XmlPullParser.END_TAG -> when (parser.name) {
+                "v", "t" -> captureValue = false
+                "c" -> {
+                    currentRow?.let { row ->
+                        while (row.size <= currentColumn) row.add("")
+                        val rawValue = value.toString()
+                        row[currentColumn] = if (currentType == "s") {
+                            sharedStrings.getOrNull(rawValue.toIntOrNull() ?: -1).orEmpty()
+                        } else {
+                            rawValue
+                        }
+                    }
+                }
+                "row" -> {
+                    currentRow?.let { rows.add(it) }
+                    currentRow = null
+                }
+            }
+        }
+    }
+
+    return rows
+}
+
+private fun cellColumnIndex(cellRef: String): Int {
+    val letters = cellRef.takeWhile { it.isLetter() }
+    var index = 0
+    letters.forEach { char ->
+        index = index * 26 + (char.uppercaseChar() - 'A' + 1)
+    }
+    return (index - 1).coerceAtLeast(0)
+}
+
+private fun normalizeImportDate(value: String): String? {
+    val digits = value.filter { it.isDigit() }
+    return if (digits.length >= 8) digits.take(8) else null
+}
+
+private fun normalizeImportTime(value: String): String? {
+    val digits = value.filter { it.isDigit() }
+    return when {
+        digits.length >= 4 -> digits.take(4)
+        digits.length in 1..2 -> digits.padStart(2, '0') + "00"
+        else -> null
+    }
+}
+
+private fun categoryFromImport(value: String): ExpenseCategory {
+    return ExpenseCategory.values().firstOrNull { it.label == value.trim() } ?: ExpenseCategory.ETC
+}
+
+private fun moodFromImport(value: String): MoodType {
+    return when (value.trim()) {
+        "행복", "만족", "좋음" -> MoodType.HAPPY
+        "우울" -> MoodType.SAD
+        "스트레스", "불안", "화남" -> MoodType.STRESS
+        else -> MoodType.NORMAL
+    }
+}
+
+private fun paymentMethodFromImport(value: String): String {
+    val trimmed = value.trim()
+    return PaymentMethods.firstOrNull { it == trimmed } ?: "기타"
 }
 
 private fun dayOfMonth(timeMillis: Long): Int {
