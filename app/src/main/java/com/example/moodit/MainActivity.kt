@@ -453,6 +453,12 @@ fun HomeScreen(
                         },
                         label = { Text("${selectedMood.label}한 하루를 한 줄로 적어보세요") },
                         minLines = 2,
+                        maxLines = 4,
+                        singleLine = false,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Text,
+                            imeAction = ImeAction.Default
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     )
                     diaryMessage?.let {
@@ -667,11 +673,11 @@ fun RecordScreen(onSave: (ExpenseRecord) -> Unit) {
                     label = { Text("메모") },
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Text,
-                        imeAction = ImeAction.Done
+                        imeAction = ImeAction.Default
                     ),
-                    keyboardActions = KeyboardActions(
-                        onDone = { focusManager.clearFocus() }
-                    ),
+                    minLines = 2,
+                    maxLines = 4,
+                    singleLine = false,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -1672,6 +1678,12 @@ private fun DiaryEditorCard(
             },
             label = { Text("이날의 감정을 한 줄로 적어보세요") },
             minLines = 2,
+            maxLines = 4,
+            singleLine = false,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Default
+            ),
             modifier = Modifier.fillMaxWidth()
         )
         message?.let {
