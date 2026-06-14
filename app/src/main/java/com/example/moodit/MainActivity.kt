@@ -174,6 +174,8 @@ fun MooditApp(database: MooditDatabase) {
                 }
                 if (imported.isNotEmpty()) {
                     importMessage = "${imported.size}건을 가져왔어요"
+                } else {
+                    importMessage = "가져올 수 있는 내역이 없어요. 엑셀 컬럼을 확인해주세요."
                 }
             }
         }
@@ -2266,7 +2268,7 @@ private fun parseMooditExpenseWorkbook(context: Context, uri: Uri): List<Expense
     val moodCol = col("감정")
     val paymentCol = col("결제수단")
 
-    if (listOf(dateCol, timeCol, memoCol, amountCol, categoryCol, moodCol, paymentCol).any { it < 0 }) {
+    if (listOf(dateCol, timeCol, memoCol, amountCol, categoryCol, moodCol).any { it < 0 }) {
         return emptyList()
     }
 
@@ -2281,7 +2283,11 @@ private fun parseMooditExpenseWorkbook(context: Context, uri: Uri): List<Expense
         val category = categoryFromImport(row.getOrNull(categoryCol).orEmpty())
         val subCategory = defaultSubCategory(category)
         val mood = moodFromImport(row.getOrNull(moodCol).orEmpty())
-        val paymentMethod = paymentMethodFromImport(row.getOrNull(paymentCol).orEmpty())
+        val paymentMethod = if (paymentCol >= 0) {
+            paymentMethodFromImport(row.getOrNull(paymentCol).orEmpty())
+        } else {
+            "카드"
+        }
         val createdAt = dateTimeTextToMillis(dateText, timeText) ?: System.currentTimeMillis()
 
         ExpenseRecord(
